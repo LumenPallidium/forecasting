@@ -81,7 +81,7 @@ class Attention(torch.nn.Module):
 
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, x, y = None):
+    def forward(self, x, y = None, mask = None):
         """Input shape is (batch, seq_len, dim)"""
         x = self.norm(x)
 
@@ -90,7 +90,9 @@ class Attention(torch.nn.Module):
         else:
             q, k, v = self.W_q(x), self.W_k(x), self.W_v(x)
         
-        output, _ = self.mha(q, k, v, need_weights=False)
+        output, _ = self.mha(q, k, v,
+                             need_weights=False,
+                             attn_mask=mask)
 
         output = self.W_o(output)
 
@@ -129,13 +131,15 @@ class Transformer(torch.nn.Module):
                  activation = torch.nn.GELU,
                  ema_decay = 0.996,
                  first_layer_norm = True,
-                 cross = False,):
+                 cross = False,
+                 causal = True):
         super().__init__()
 
         self.dim = dim
         self.depth = depth
         self.heads = heads
         self.cross = cross
+        self.causal = causal
 
         self.ema_decay = ema_decay
 
@@ -158,16 +162,24 @@ class Transformer(torch.nn.Module):
                 MLP(dim, dim, dropout = dropout, activation = activation)
             ]))
 
-    def forward(self, x, y = None, stop_at = None, pos_embedding = None):
+    def forward(self,
+                x,
+                y = None,
+                stop_at = None,
+                pos_embedding = None,
+                mask = None):
         """Transformer forward. Can stop at a certain layer for layer-dropout,
         as well as be supplied with a positional embedding (e.g. for shared
         positional embeddings between models)"""
         if pos_embedding is None:
             pos_embedding = self.pos_embedding
+        if self.causal and (mask is None):
+            mask = torch.triu(torch.ones(x.size(1), x.size(1)), diagonal = 1).to(x.device,
+                                                                                 dtype = torch.bool)
         x = self.norm(x) + pos_embedding
 
         for i, (attention, ff) in enumerate(self.layers):
-            x = x + attention(x, y = y)
+            x = x + attention(x, y = y, mask = mask)
             x = x + ff(x)
 
             y = None # disable cross attention after first layer
