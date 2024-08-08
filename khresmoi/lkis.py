@@ -23,9 +23,9 @@ class ComplexReLU(torch.nn.Module):
         y = torch.complex(new_real, x.imag)
         return y
 
-class MLP(torch.nn.Module):
+class DeepMLP(torch.nn.Module):
     """
-    Classic multi-layer perceptron (MLP) model.
+    Multi-layer perceptron (MLP) model.
     """
     def __init__(self,
                  input_dim,
@@ -168,23 +168,23 @@ class LKIS(torch.nn.Module):
             fun_gen_dim = hidden_mults[-1] * hidden_dim
             hidden_mults = hidden_mults[:-1]
             fun_gen = FunGen(fun_gen_dim, complex = complex)
-            self.encoder = torch.nn.Sequential(MLP(hidden_dim, bottleneck_dim,
-                                                    hidden_mults, activation = activation,
-                                                    complex = complex),
+            self.encoder = torch.nn.Sequential(DeepMLP(hidden_dim, bottleneck_dim,
+                                                       hidden_mults, activation = activation,
+                                                       complex = complex),
                                                fun_gen)
 
         else:
-            self.encoder = MLP(hidden_dim, bottleneck_dim,
-                            hidden_mults, activation = activation,
-                            complex = complex)
+            self.encoder = DeepMLP(hidden_dim, bottleneck_dim,
+                                   hidden_mults, activation = activation,
+                                   complex = complex)
 
         self.embedder = torch.nn.Linear(input_dim * delay, hidden_dim * embed_mult)
 
         if self.use_decoder:
             hidden_mults = hidden_mults[::-1]
-            self.decoder = MLP(bottleneck_dim, hidden_dim,
-                               hidden_mults, activation = activation,
-                               complex = complex)
+            self.decoder = DeepMLP(bottleneck_dim, hidden_dim,
+                                   hidden_mults, activation = activation,
+                                   complex = complex)
             self.deembedder = torch.nn.Linear(hidden_dim * embed_mult, input_dim * delay)
 
     def forward(self, x):
