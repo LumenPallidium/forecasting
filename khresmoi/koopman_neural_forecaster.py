@@ -89,7 +89,7 @@ class KNF(torch.nn.Module):
 
         self.koopman_global = torch.nn.Parameter(torch.randn(self.dim,
                                                              self.dim,))
-        self.koopman_local = Transformer(self.in_dim,
+        self.koopman_local = Transformer(self.in_dim * self.n_measurements,
                                          transformer_layers,
                                          context = self.lookback_steps,
                                          causal = True,
@@ -99,23 +99,27 @@ class KNF(torch.nn.Module):
     def forward(self, x):
         batch_size, total_steps, dim = x.shape
         n_chunks = total_steps // self.num_steps
+        #TODO pad?
         x = x.view(batch_size, n_chunks, self.num_steps, dim)
-        v = self.encoder(x)
+        v = self.encoder(x).view(batch_size, n_chunks, -1)
 
-        v_hat = torch.einsum("...j,ji->...i",
-                             v.view(batch_size, n_chunks, -1),
+        v_hat_global = torch.einsum("...j,ji->...i",
+                             v,
                              self.koopman_global)
-        v_hat = v_hat.view(batch_size, n_chunks, self.n_measurements, self.in_dim)
+        
+        v_local = v.view(batch_size * n_chunks // self.lookback_steps, self.lookback_steps, -1)
+        v_hat_local = self.koopman_local(v_local).view(batch_size, n_chunks, -1)
 
-        # TODO add the local koopman operator
+        v_hat = v_hat_global + v_hat_local
+        v_hat = v_hat.view(batch_size, n_chunks, self.n_measurements, self.in_dim)
 
         x_hat = self.decoder(v_hat)
         x_hat = x_hat.view(batch_size, -1, self.in_dim)
         return x_hat
         
 if __name__ == "__main__":
-    knf = KNF(3, 2, 4)
-    x = torch.randn(8, 10, 3)
+    knf = KNF(4, 2, 4)
+    x = torch.randn(8, 4 * 2 * 4, 4)
 
     x_hat = knf(x)
     print(x_hat.shape)
