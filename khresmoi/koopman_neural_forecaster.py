@@ -19,7 +19,7 @@ class KNFEncoder(torch.nn.Module):
                                                              num_steps,
                                                              in_dim,
                                                              num_steps,
-                                                             in_dim))
+                                                             in_dim) * 1e-2)
 
     def forward(self, x):
         """
@@ -45,7 +45,7 @@ class KNFDecoder(torch.nn.Module):
         self.encoder_matrix = torch.nn.Parameter(torch.randn(num_steps,
                                                              in_dim,
                                                              self.n_measurements,
-                                                             in_dim))
+                                                             in_dim) * 1e-2)
 
     def forward(self, v):
         x = torch.einsum("...nd,ijnd->...ij",
@@ -77,7 +77,7 @@ class KNF(torch.nn.Module):
         super().__init__()
         self.in_dim = in_dim
         self.num_steps = num_steps
-        assert lookback_steps % num_steps == 0, "Lookback steps must be divisible by num steps"
+        assert num_steps % lookback_steps == 0, "num_steps must be divisible by lookback_steps"
         self.lookback_steps = lookback_steps
 
         self.measurement_functions = measurement_functions
@@ -88,7 +88,7 @@ class KNF(torch.nn.Module):
         self.decoder = KNFDecoder(in_dim, num_steps, self.n_measurements)
 
         self.koopman_global = torch.nn.Parameter(torch.randn(self.dim,
-                                                             self.dim,))
+                                                             self.dim,) * 1e-2)
         self.koopman_local = Transformer(self.in_dim * self.n_measurements,
                                          transformer_layers,
                                          context = self.lookback_steps,
@@ -116,10 +116,30 @@ class KNF(torch.nn.Module):
         x_hat = self.decoder(v_hat)
         x_hat = x_hat.view(batch_size, -1, self.in_dim)
         return x_hat
+    
+    def get_loss(self, x_t, x_t1):
+        x_t1_hat = self(x_t)
+        return torch.nn.functional.mse_loss(x_t1_hat, x_t1)
         
 if __name__ == "__main__":
-    knf = KNF(4, 2, 4)
-    x = torch.randn(8, 4 * 2 * 4, 4)
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from data_stream import FitzHughNagumoDS, train_on_ds
+    DELAY = 16
+    LOOKBACK_DELAY = 4
+    N_STEPS = 1000
+    BATCH_SIZE = 512
+    HIDDEN_DIM = 32
+    HIDDEN_MULTS = [1, 2, 2, 2, 2, 1]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    x_hat = knf(x)
-    print(x_hat.shape)
+    model = KNF(2, DELAY, LOOKBACK_DELAY)
+    ds = FitzHughNagumoDS()
+
+    losses = train_on_ds(model, ds,
+                         n_steps = N_STEPS,
+                         delay = DELAY,
+                         batch_size = BATCH_SIZE)
+    
+    smooth_losses = np.convolve(losses, np.ones(100) / 100, mode = "valid")
+    plt.plot(smooth_losses)
