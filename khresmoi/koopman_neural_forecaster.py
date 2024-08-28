@@ -42,7 +42,7 @@ class KNFDecoder(torch.nn.Module):
         self.num_steps = num_steps
         self.n_measurements = n_measurements
 
-        self.encoder_matrix = torch.nn.Parameter(torch.randn(num_steps,
+        self.decoder_matrix = torch.nn.Parameter(torch.randn(num_steps,
                                                              in_dim,
                                                              self.n_measurements,
                                                              in_dim) * 1e-2)
@@ -50,7 +50,7 @@ class KNFDecoder(torch.nn.Module):
     def forward(self, v):
         x = torch.einsum("...nd,ijnd->...ij",
                          v,
-                         self.encoder_matrix)
+                         self.decoder_matrix)
         return x
 
 class KNF(torch.nn.Module):
@@ -96,7 +96,7 @@ class KNF(torch.nn.Module):
                                          heads = 2,
                                          dropout = 0.1)
         
-    def forward(self, x):
+    def forward(self, x, return_base_reconstruction = False):
         batch_size, total_steps, dim = x.shape
         n_chunks = total_steps // self.num_steps
         #TODO pad?
@@ -115,11 +115,17 @@ class KNF(torch.nn.Module):
 
         x_hat = self.decoder(v_hat)
         x_hat = x_hat.view(batch_size, -1, self.in_dim)
+        if return_base_reconstruction:
+            v = v.view(batch_size, n_chunks, self.n_measurements, self.in_dim)
+            recons = self.decoder(v).view(batch_size, total_steps, dim)
+            return x_hat, recons
         return x_hat
     
     def get_loss(self, x_t, x_t1):
-        x_t1_hat = self(x_t)
-        return torch.nn.functional.mse_loss(x_t1_hat, x_t1)
+        x_t1_hat, recons = self(x_t, return_base_reconstruction = True)
+        l_rec = torch.nn.functional.mse_loss(recons, x_t)
+        l_pred = torch.nn.functional.mse_loss(x_t1_hat, x_t1)
+        return l_rec + l_pred
         
 if __name__ == "__main__":
     import numpy as np
@@ -129,8 +135,6 @@ if __name__ == "__main__":
     LOOKBACK_DELAY = 4
     N_STEPS = 1000
     BATCH_SIZE = 512
-    HIDDEN_DIM = 32
-    HIDDEN_MULTS = [1, 2, 2, 2, 2, 1]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = KNF(2, DELAY, LOOKBACK_DELAY)

@@ -1,5 +1,57 @@
 import torch
     
+class ComplexGELU(torch.nn.Module):
+    """
+    Complex GELU activation function.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        new_real = torch.nn.functional.gelu(x.real)
+        # need to do this to avoid in-place operation
+        y = torch.complex(new_real, x.imag)
+        return y
+    
+class ComplexReLU(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x):
+        new_real = torch.nn.functional.relu(x.real)
+        y = torch.complex(new_real, x.imag)
+        return y
+    
+class FunGen(torch.nn.Module):
+    def __init__(self, dim, bias = True, complex = True):
+        super().__init__()
+        self.dim = dim
+        dtype = torch.complex64 if complex else None
+
+        self.linear = torch.nn.Linear(dim, dim,
+                                      bias = bias,
+                                      dtype = dtype)
+        self.log_linear = torch.nn.Linear(dim, dim,
+                                          bias = bias,
+                                          dtype = dtype)
+        self.exp_linear = torch.nn.Linear(dim, dim,
+                                          bias = bias,
+                                          dtype = dtype)
+
+        if complex:
+            self.relu = ComplexReLU()
+        else:
+            self.relu = torch.nn.ReLU()
+
+    def forward(self, x):
+        y_linear = self.linear(x)
+        log_x = torch.log(self.relu(self.log_linear(x)) + 1e-6)
+
+        y_log = self.exp_linear(torch.exp(log_x))
+        y = y_linear * y_log
+        return y
+
+
 class MLP(torch.nn.Module):
     """An MLP layer.
     
