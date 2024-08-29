@@ -73,7 +73,8 @@ class KNF(torch.nn.Module):
                  num_steps,
                  lookback_steps,
                  transformer_layers = 3,
-                 measurement_functions = MEASUREMENT_FUNCTIONS,):
+                 measurement_functions = MEASUREMENT_FUNCTIONS,
+                 use_lookback = True):
         super().__init__()
         self.in_dim = in_dim
         self.num_steps = num_steps
@@ -95,37 +96,67 @@ class KNF(torch.nn.Module):
                                          causal = True,
                                          heads = 2,
                                          dropout = 0.1)
+        if use_lookback:
+            self.koopman_lookback = MLP(self.in_dim * self.n_measurements,
+                                        2 * self.in_dim * self.n_measurements)
+            self.use_lookback = use_lookback
+        else:
+            self.use_lookback = False
         
-    def forward(self, x, return_base_reconstruction = False):
+    def forward(self, x, return_aux = False):
         batch_size, total_steps, dim = x.shape
         n_chunks = total_steps // self.num_steps
         #TODO pad?
         x = x.view(batch_size, n_chunks, self.num_steps, dim)
-        v = self.encoder(x).view(batch_size, n_chunks, -1)
+        v_full = self.encoder(x).view(batch_size, n_chunks, -1)
 
-        v_hat_global = torch.einsum("...j,ji->...i",
-                             v,
-                             self.koopman_global)
-        
-        v_local = v.view(batch_size * n_chunks // self.lookback_steps, self.lookback_steps, -1)
-        v_hat_local = self.koopman_local(v_local).view(batch_size, n_chunks, -1)
+        chunks = []
+        # for loop because lookback network is recursive
+        for chunk in range(0, n_chunks):
+            v = v_full[:, chunk, :]
+            v_hat_global = torch.einsum("...j,ji->...i",
+                                        v,
+                                        self.koopman_global)
+            
+            v_local = v.view(batch_size // self.lookback_steps, self.lookback_steps, -1)
+            v_hat_local = self.koopman_local(v_local).view(batch_size, -1)
 
-        v_hat = v_hat_global + v_hat_local
-        v_hat = v_hat.view(batch_size, n_chunks, self.n_measurements, self.in_dim)
+            v_hat = v_hat_global + v_hat_local
+            lookback_loss = 0
+            if self.use_lookback & (chunk != n_chunks - 1):
+                next_chunk = v_full[:, chunk + 1, :]
+                next_chunk = next_chunk.view(batch_size, -1).detach()
+                pred_error = v_hat - next_chunk
+
+                v_hat_lookback = self.koopman_lookback(pred_error)
+                v_hat = v_hat + v_hat_lookback
+
+                lookback_loss += (pred_error ** 2).sum()
+
+            v_hat = v_hat.view(batch_size, self.n_measurements, self.in_dim)
+
+            chunks.append(v_hat)
+
+        v_hat = torch.stack(chunks, dim = 1)
 
         x_hat = self.decoder(v_hat)
         x_hat = x_hat.view(batch_size, -1, self.in_dim)
-        if return_base_reconstruction:
-            v = v.view(batch_size, n_chunks, self.n_measurements, self.in_dim)
-            recons = self.decoder(v).view(batch_size, total_steps, dim)
-            return x_hat, recons
+        if return_aux:
+            v_full = v_full.view(batch_size,
+                                 n_chunks,
+                                 self.n_measurements,
+                                 self.in_dim)
+            recons = self.decoder(v_full).view(batch_size,
+                                               total_steps,
+                                               dim)
+            return x_hat, recons, lookback_loss
         return x_hat
     
     def get_loss(self, x_t, x_t1):
-        x_t1_hat, recons = self(x_t, return_base_reconstruction = True)
+        x_t1_hat, recons, l_lookback = self(x_t, return_aux = True)
         l_rec = torch.nn.functional.mse_loss(recons, x_t)
         l_pred = torch.nn.functional.mse_loss(x_t1_hat, x_t1)
-        return l_rec + l_pred
+        return l_rec + l_pred + l_lookback
         
 if __name__ == "__main__":
     import numpy as np
@@ -138,12 +169,26 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = KNF(2, DELAY, LOOKBACK_DELAY)
+    model_no_lookback = KNF(2, DELAY, LOOKBACK_DELAY, use_lookback = False)
     ds = FitzHughNagumoDS()
 
     losses = train_on_ds(model, ds,
                          n_steps = N_STEPS,
                          delay = DELAY,
                          batch_size = BATCH_SIZE)
+    losses_no_lookback = train_on_ds(model_no_lookback, ds,
+                                     n_steps = N_STEPS,
+                                     delay = DELAY,
+                                     batch_size = BATCH_SIZE)
     
     smooth_losses = np.convolve(losses, np.ones(100) / 100, mode = "valid")
-    plt.plot(smooth_losses)
+    smooth_losses_no_lookback = np.convolve(losses_no_lookback, np.ones(100) / 100, mode = "valid")
+
+    fig, ax = plt.subplots(1, 2, figsize = (10, 5))
+    ax[0].plot(smooth_losses)
+    ax[0].plot(smooth_losses_no_lookback,
+               c = "red")
+    ax[0].set_title("Loss")
+    A = model.koopman_global.detach().cpu().numpy()
+    ax[1].imshow(A)
+    ax[1].set_title("Koopman Matrix Approximation")
