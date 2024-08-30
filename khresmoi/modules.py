@@ -23,18 +23,19 @@ class ComplexReLU(torch.nn.Module):
         return y
     
 class FunGen(torch.nn.Module):
-    def __init__(self, dim, bias = True, complex = True):
+    def __init__(self, dim, out_dim = None, bias = True, complex = False):
         super().__init__()
         self.dim = dim
+        self.out_dim = out_dim if out_dim is not None else dim
         dtype = torch.complex64 if complex else None
 
-        self.linear = torch.nn.Linear(dim, dim,
+        self.linear = torch.nn.Linear(dim, out_dim,
                                       bias = bias,
                                       dtype = dtype)
         self.log_linear = torch.nn.Linear(dim, dim,
                                           bias = bias,
                                           dtype = dtype)
-        self.exp_linear = torch.nn.Linear(dim, dim,
+        self.exp_linear = torch.nn.Linear(dim, out_dim,
                                           bias = bias,
                                           dtype = dtype)
 
