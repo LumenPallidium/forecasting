@@ -13,14 +13,16 @@ class FitzHughNagumoDS:
         self.c = c
         self.I = I
 
-    def sample(self, batch_size = 256, T = 100, dt = 0.01, x0 = None):
+    def sample(self, batch_size = 256, T = 100, dt = 0.01, x0 = None, I = None):
+        if I is None:
+            I = self.I
         with torch.no_grad():
             if x0 is None:
                 x0 = torch.randn(batch_size, 2)
             x = x0
             x_t = [x.clone()]
             for t in range(T - 1):
-                x[:, 0].add_(dt * (-(x[:, 0] ** 3) / 3 + x[:, 0] - x[:, 1] + self.I))
+                x[:, 0].add_(dt * (-(x[:, 0] ** 3) / 3 + x[:, 0] - x[:, 1] + I))
                 x[:, 1].add_(dt * self.c * (x[:, 0] - self.b * x[:, 1] + self.a))
 
                 x_t.append(x.clone())
@@ -28,6 +30,31 @@ class FitzHughNagumoDS:
 
         return x_t # batch, T, 2
     
+class CoupledFitzHughNagumoDS:
+    def __init__(self, n_copies = 5, a = 0.7, b = 0.8, c = 0.08, I = 0.8):
+        self.n_copies = n_copies
+        self.a = a
+        self.b = b
+        self.c = c
+        self.I = I
+
+    def sample(self, batch_size = 256, T = 100, dt = 0.01, x0 = None):
+        I = self.I
+        with torch.no_grad():
+            if x0 is None:
+                x0 = torch.randn(batch_size, self.n_copies, 2)
+            x = x0
+            x_t = [x.clone()]
+            for t in range(T - 1):
+                x[:, :, 0].add_(dt * (-(x[:, :, 0] ** 3) / 3 + x[:, :, 0] - x[:, :, 1] + I))
+                x[:, :, 1].add_(dt * self.c * (x[:, :, 0] - self.b * x[:, :, 1] + self.a))
+
+                # they feel the local field
+                I = torch.mean(x[:, :, 0])
+                x_t.append(x.clone())
+            x_t = torch.stack(x_t, dim = 1).view(batch_size, T, -1)
+
+        return x_t # batch, T, 2 * n_copies
 
 def train_on_ds(model, ds, n_steps = 1000, delay = 10, batch_size = 256):
     device = "cuda" if torch.cuda.is_available() else "cpu"

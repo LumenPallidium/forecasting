@@ -150,6 +150,7 @@ class KNF(torch.nn.Module):
                                       -1)
 
         chunks = []
+        last_v_hat = None
         # for loop because lookback network is recursive
         for chunk in range(0, steps):
             v = v_full[:, chunk, :]
@@ -161,15 +162,15 @@ class KNF(torch.nn.Module):
 
             v_hat = v_hat_global + v_hat_local
             lookback_loss = 0
-            if self.use_lookback & (chunk != steps - 1):
-                next_chunk = v_full[:, chunk + 1, :]
-                next_chunk = next_chunk.detach()
-                pred_error = v_hat - next_chunk
+            if self.use_lookback & (chunk != 0):
+                pred_error = v - last_v_hat
 
-                lookback_loss += (pred_error ** 2).sum()
+                lookback_loss += (pred_error ** 2).mean()
                 v_hat_lookback = self.koopman_lookback(pred_error)
                 v_hat = v_hat + v_hat_lookback
 
+
+            last_v_hat = v_hat.clone().detach()
             v_hat = v_hat.view(batch_size,
                                self.lookback_steps,
                                self.n_measurements,
@@ -201,7 +202,7 @@ class KNF(torch.nn.Module):
 if __name__ == "__main__":
     import numpy as np
     import matplotlib.pyplot as plt
-    from data_stream import FitzHughNagumoDS, train_on_ds
+    from data_stream import CoupledFitzHughNagumoDS, train_on_ds
     DELAY = 4
     LOOKBACK_DELAY = 8
     N_CHUNKS = 32
@@ -209,66 +210,30 @@ if __name__ == "__main__":
     BATCH_SIZE = 512
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = KNF(2, DELAY, LOOKBACK_DELAY)
-    model_no_lookback = KNF(2, DELAY, LOOKBACK_DELAY, use_lookback = False)
-    model_fun_gen = KNF(2, DELAY, LOOKBACK_DELAY, use_fun_gen = True)
-    model_fun_gen_no_lookback = KNF(2, DELAY, LOOKBACK_DELAY, use_lookback = False, use_fun_gen = True)
-    ds = FitzHughNagumoDS()
+    model = KNF(10, DELAY, LOOKBACK_DELAY)
+    model_fun_gen = KNF(10, DELAY, LOOKBACK_DELAY, use_fun_gen = True)
+    ds = CoupledFitzHughNagumoDS()
 
     losses = train_on_ds(model, ds,
                          n_steps = N_STEPS,
                          delay = DELAY * N_CHUNKS,
                          batch_size = BATCH_SIZE)
-    losses_no_lookback = train_on_ds(model_no_lookback, ds,
-                                     n_steps = N_STEPS,
-                                     delay = DELAY * N_CHUNKS,
-                                     batch_size = BATCH_SIZE)
     losses_fun_gen = train_on_ds(model_fun_gen, ds,
                                  n_steps = N_STEPS,
                                  delay = DELAY * N_CHUNKS,
                                  batch_size = BATCH_SIZE)
-    losses_fun_gen_no_lookback = train_on_ds(model_fun_gen_no_lookback, ds,
-                                             n_steps = N_STEPS,
-                                             delay = DELAY * N_CHUNKS,
-                                             batch_size = BATCH_SIZE)
     
-    smooth_losses = np.convolve(losses, np.ones(100) / 100, mode = "valid")
-    smooth_losses_no_lookback = np.convolve(losses_no_lookback, np.ones(100) / 100, mode = "valid")
-    smooth_losses_fun_gen = np.convolve(losses_fun_gen, np.ones(100) / 100, mode = "valid")
-    smooth_losses_fun_gen_no_lookback = np.convolve(losses_fun_gen_no_lookback, np.ones(100) / 100, mode = "valid")
+    smooth_losses = np.convolve(losses, np.ones(20) / 20, mode = "valid")
+    smooth_losses_fun_gen = np.convolve(losses_fun_gen, np.ones(20) / 20, mode = "valid")
 
-    model_fun_gen.eval()
-    test_traj = ds.sample(T = 10 * (DELAY *  LOOKBACK_DELAY),
-                          batch_size = 1).to(device)
-    x = test_traj[:, :(DELAY *  LOOKBACK_DELAY), :]
-    preds = [x]
-    for i in range(1, 10):
-        x = model_fun_gen(x)
-        preds.append(x[:, -DELAY:, :])
-    preds = torch.cat(preds, dim = 1).detach().cpu().numpy()
-
-
-    fig, ax = plt.subplots(1, 3, figsize = (10, 5))
+    fig, ax = plt.subplots(1, 2, figsize = (10, 5))
     ax[0].plot(smooth_losses,
                label = "Full")
-    ax[0].plot(smooth_losses_no_lookback,
-               label = "No Lookback")
     ax[0].plot(smooth_losses_fun_gen,
                label = "Fun Gen")
-    ax[0].plot(smooth_losses_fun_gen_no_lookback,
-               label = "Fun Gen, No Lookback")
     ax[0].set_title("Loss")
     ax[0].legend()
-    A = model.koopman_global.detach().cpu().numpy()
+    A = model_fun_gen.koopman_global.detach().cpu().numpy()
     ax[1].imshow(A)
     ax[1].set_title("Koopman Matrix Approximation")
 
-    ax[2].plot(test_traj[0, :, 0].cpu().numpy(),
-               test_traj[0, :, 1].cpu().numpy(),
-               label = "True")
-    ax[2].plot(preds[0, :, 0],
-                preds[0, :, 1],
-                label = "Pred")
-    
-    ax[2].set_title("Trajectory")
-    ax[2].legend()
