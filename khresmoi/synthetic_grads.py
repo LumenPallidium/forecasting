@@ -1,5 +1,6 @@
 import torch
 from torch.func import jacrev, vmap
+from torch.nn.functional import mse_loss
 
 class GateRNN(torch.nn.Module):
     """
@@ -22,8 +23,8 @@ class GateRNN(torch.nn.Module):
         self.register_buffer("dh_dWh", torch.zeros(dim, dim))
 
     
-    def partial_forward(self, x, h, i, Wh):
-        new_h = self.activation(x[:, i] @ self.Wx + h @ Wh)
+    def partial_forward(self, x, h, Wh):
+        new_h = self.activation(x @ self.Wx + h @ Wh)
         gate = torch.sigmoid(new_h @ self.Wgate)
         h = gate * h + (1 - gate)
         return h, h
@@ -44,12 +45,17 @@ class GateRNN(torch.nn.Module):
         y = []
         for i in range(n_steps):
             if take_grad:
-                dh_dh, h = vmap(dh_dh_func)(x, h, i, self.Wh)
+                Wh = self.Wh.unsqueeze(0).repeat(x.shape[0], 1, 1)
+                dh_dh, h = vmap(dh_dh_func)(x[:, i, :],
+                                            h,
+                                            Wh)
                 self.hidden_grads.append(dh_dh)
                 if (i == n_steps - 1) and take_grad:
                     dh_dWh_func = jacrev(self.partial_forward,
-                                         3)
-                    self.dh_dWh = dh_dWh_func(x, h, i, self.Wh)[0]
+                                         2)
+                    self.dh_dWh = dh_dWh_func(x[:, i, :],
+                                              h,
+                                              self.Wh)[0]
             else:
                 h = self.partial_forward(x, h, i, self.Wh)
             y.append(h)
@@ -70,28 +76,41 @@ class SynGradBlock(torch.nn.Module):
     def forward(self, x, h = None):
         # expect shape N, L, D
         
-        y, h = self.rnn(x, h)
+        h, y = self.rnn(x, h)
         grad_hat = self.synth(h)
 
-        return y, h, grad_hat
+        return h, y, grad_hat
     
-    def get_synthetic_grad(self, h, y):
+    def get_synthetic_grad(self, y):
         # note this assumes .backward() has been called
         all_hidden_grads = torch.stack(self.rnn.hidden_grads,
                                        dim = 1)
-        synth_grad = torch.einsum("nld,nd->nl",
+        synth_grad = torch.einsum("nld,de->nle",
                                   y,
                                   self.synth.weight)
+        with torch.no_grad():
+            bootstrap = torch.einsum("nld,nled->nle",
+                                    synth_grad,
+                                    all_hidden_grads)
+        # bootstrap is one step ahead of synth_grad
+        synth_loss = mse_loss(synth_grad[:, 1:, :],
+                              bootstrap[:, :-1, :].detach())
         # TODO : check this, should it be matmul
-        bootstrap_grad = torch.einsum("nld,nd->nl",
-                                      all_hidden_grads,
+        bootstrap_grad = torch.einsum("nld,ndwh->lwh",
+                                      synth_grad,
                                       self.rnn.dh_dWh)
+        bootstrap_grad = bootstrap_grad.mean(dim = 1) / y.shape[0]
+        return synth_loss, bootstrap_grad
     
 if __name__ == "__main__":
-    block = GateRNN(10, 10)
+    block = SynGradBlock(10)
     x = torch.randn(5, 8, 10)
-    h, y = block(x)
+    h, y, grad_hat = block(x)
     print(y.shape, h.shape)
     loss = y.sum()
     loss.backward()
+
+    synth_loss, synth_grad = block.get_synthetic_grad(y)
+    print(synth_loss)
+    print(synth_grad.shape)
         
