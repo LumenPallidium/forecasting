@@ -130,6 +130,7 @@ dmypy.json
 
 # folders
 /data
+/applications
 /networks/tmp
 /networks/data
 
