@@ -1,4 +1,7 @@
+from dataclasses import dataclass
+from typing import Dict
 import torch
+from collections import defaultdict
     
 class ComplexGELU(torch.nn.Module):
     """
@@ -52,6 +55,25 @@ class FunGen(torch.nn.Module):
         y = y_linear * y_log
         return y
 
+def symlog(x):
+    return torch.sign(x) * torch.log(torch.abs(x) + 1)
+
+def symexp(x):
+    return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
+
+class SymLog(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return symlog(x)
+    
+class SymExp(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return symexp(x)
 
 class MLP(torch.nn.Module):
     """An MLP layer.
@@ -70,9 +92,10 @@ class MLP(torch.nn.Module):
                  dim, 
                  hidden_dim, 
                  dropout = 0.,
-                 activation = torch.nn.GELU):
+                 activation = torch.nn.GELU,
+                 residual = True):
         super().__init__()
-
+        self.residual = residual
         self.net = torch.nn.Sequential(
             torch.nn.LayerNorm(dim),
             torch.nn.Linear(dim, hidden_dim),
@@ -83,6 +106,8 @@ class MLP(torch.nn.Module):
         )
 
     def forward(self, x):
+        if self.residual:
+            return x + self.net(x)
         return self.net(x)
     
 class Attention(torch.nn.Module):
@@ -239,6 +264,50 @@ class Transformer(torch.nn.Module):
             if (stop_at is not None) and (i >= (stop_at - 1)):
                 break
         return x
+    
+
+@dataclass
+class LossComponents:
+    """Store and aggregate loss components with minimal overhead."""
+    components: Dict[str, torch.Tensor]
+    
+    def __init__(self):
+        self.components = {}
+        
+    def add(self, name: str, loss: torch.Tensor):
+        """Add a loss component."""
+        self.components[name] = loss
+        
+    @property
+    def total(self) -> torch.Tensor:
+        """Compute total loss for backpropagation."""
+        return sum(self.components.values())
+    
+    def detach_dict(self) -> Dict[str, float]:
+        """Get detached float values for logging."""
+        return {name: loss.detach().item() 
+                for name, loss in self.components.items()}
+
+class LossTracker:
+    """Track loss components across epochs/iterations."""
+    def __init__(self):
+        self.history = defaultdict(list)
+        
+    def update(self, loss_components: LossComponents):
+        """Store the current loss values."""
+        detached = loss_components.detach_dict()
+        for name, value in detached.items():
+            self.history[name].append(value)
+        self.history['total'].append(sum(detached.values()))
+        
+    def get_means(self) -> Dict[str, float]:
+        """Get mean values for the current epoch."""
+        return {name: sum(values) / len(values) 
+                for name, values in self.history.items()}
+    
+    def reset(self):
+        """Reset history for new epoch."""
+        self.history.clear()
     
 if __name__ == "__main__":
     # Test the transformer

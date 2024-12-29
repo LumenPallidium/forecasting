@@ -97,7 +97,7 @@ class KNF(torch.nn.Module):
                  measurement_functions = MEASUREMENT_FUNCTIONS,
                  n_measurements = 5,
                  use_lookback = True,
-                 use_fun_gen = False):
+                 use_fun_gen = True):
         super().__init__()
         self.in_dim = in_dim
         self.num_steps = num_steps
