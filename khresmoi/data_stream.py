@@ -1,4 +1,6 @@
 import torch
+import torch.nn.functional as F
+import numpy as np
 from tqdm import tqdm
  
 class FitzHughNagumoDS:
@@ -82,3 +84,144 @@ def train_on_ds(model, ds, n_steps = 1000, delay = 10, batch_size = 256):
         pbar.update()
 
     return losses
+
+class TimeSeriesGenerator:
+    """
+    A simple, nonstationary time series generator, mostly from Claude.
+    """
+    def __init__(self,
+                 scale_max = 1e6,
+                 scale_min = 0,
+                 var_max = 0.01,
+                 max_growth = 10,
+                 temperature = 0.1,
+                 seed=None):
+        self.scale_max = scale_max
+        self.scale_min = scale_min
+        if var_max < 1:
+            var_max = scale_max * var_max
+        self.var_max = var_max
+        self.max_growth = max_growth
+        self.temperature = temperature
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            
+    def generate_smooth_variance(self,
+                                 length,
+                                 control_points_per = 20):
+        num_points = length // control_points_per + 2
+        control_points = torch.rand(num_points) * self.var_max
+        
+        variance = F.interpolate(
+                                control_points.view(1, 1, -1),
+                                size=length,
+                                mode="linear",
+                                align_corners=True
+                            ).squeeze()
+        
+        return variance
+        
+    def generate_trend(self,
+                       length,
+                       trend_type="mixed"):
+        t = torch.linspace(0, 1, length)
+
+        base = torch.rand(1) * (self.scale_max - self.scale_min) + self.scale_min
+        
+        if trend_type == "sin":
+            n_freqs = torch.randint(1, 30, (1,)).item()
+            freq = torch.rand(n_freqs) * 20 + 1
+            phase = torch.rand(n_freqs) * 2 * np.pi
+            scale = (1/ n_freqs) * 0.3 * torch.rand(n_freqs) * (self.scale_max - self.scale_min) + self.scale_min
+            aggs = scale[None, :] * torch.sin(2 * np.pi * freq[None, :] * t[:, None] + phase[None, :])
+            return aggs.sum(dim=1) + base
+        elif trend_type == "linear":
+            slope = torch.rand(1) * 2 - 1
+            return self.max_growth * slope * t + base
+        elif trend_type == "logistic":
+            k = torch.rand(1) * (self.scale_max - self.scale_min) + self.scale_min
+            x0 = torch.rand(1) * 0.5 + 0.25
+            return 1 / (1 + torch.exp(-k * (t - x0))) + base
+        elif trend_type == "normal":
+            center = torch.rand(1)
+            width = torch.rand(1) * 0.1
+            scale = torch.rand(1) * (self.scale_max - self.scale_min) + self.scale_min
+            return scale * torch.exp(-0.5 * ((t - center) / width) ** 2) + base
+        elif trend_type == "mixed":
+            trends = [
+                self.generate_trend(length, "sin"),
+                self.generate_trend(length, "linear"),
+                self.generate_trend(length, "logistic"),
+                self.generate_trend(length, "normal")
+            ]
+            weights = F.softmax(torch.rand(len(trends)) / self.temperature,
+                                dim=0)
+            return sum(w * trend for w, trend in zip(weights, trends)) + base
+            
+    def generate_pure_series(self, n, length):
+        trends = torch.stack([
+            self.generate_trend(length, "mixed") 
+            for _ in range(n)
+        ])
+        
+        variances = torch.stack([
+            self.generate_smooth_variance(length)
+            for _ in range(n)
+        ])
+        
+        noise = torch.randn(n, length) * torch.sqrt(variances)
+        noise = torch.cumsum(noise, dim=1)
+        
+        series = trends + noise
+        series[series < self.scale_min] = self.scale_min
+        
+        return series, variances
+        
+    def generate_time_varying_covariance(self, n, length, sparsity = 0.5, max_corr = 0.2):
+        rotation_speeds = torch.rand(n, n) * (torch.rand(n, n) > sparsity)
+        base_correlations = torch.rand(n, n) * max_corr
+        base_correlations = (base_correlations + base_correlations.T) / 2
+        base_correlations.fill_diagonal_(1.0)
+        
+        t = torch.linspace(0, 1, length)
+        correlations = []
+        
+        for ti in t:
+            rotation = torch.sin(2 * np.pi * rotation_speeds * ti)
+            rotation = (rotation + rotation.T) / 2
+            rotation.fill_diagonal_(1.0)
+            
+            corr = base_correlations * (0.7 + 0.3 * rotation)
+            corr = (corr + corr.T) / 2
+            correlations.append(corr)
+            
+        return torch.stack(correlations)
+
+    def generate(self, n, length):
+        pure_series, variances = self.generate_pure_series(n, length)
+        correlations = self.generate_time_varying_covariance(n, length)
+        
+        mixed_series = []
+        for t in range(length):
+            corr = correlations[t]
+            
+            L = torch.linalg.cholesky(corr)
+            mixed_t = torch.matmul(L, pure_series[:, t])
+            mixed_series.append(mixed_t)
+            
+        mixed_series = torch.stack(mixed_series, dim=1)
+        
+        return mixed_series, pure_series, correlations
+    
+if __name__ == "__main__":
+    from matplotlib import pyplot as plt
+    ts_gen = TimeSeriesGenerator(seed=42)
+    mixed_series, pure_series, correlations = ts_gen.generate(25, 10000)
+
+    fig, axes = plt.subplots(5, 5, figsize=(20, 20))
+    for i in range(25):
+        j = i // 5
+        k = i % 5
+        axes[j, k].plot(mixed_series[i].numpy())
+        axes[j, k].set_title(f"Series {i + 1}")

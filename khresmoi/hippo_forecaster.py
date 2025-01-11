@@ -9,8 +9,6 @@ except ImportError:
     warn("hippo not found, using slow version")
     HIPPO_AVAILABLE = False
 
-
-
 class HiPPOLegS(torch.nn.Module):
     def __init__(self,
                  coef_dim,
@@ -53,30 +51,22 @@ class HiPPOLegS(torch.nn.Module):
         L = torch.stack(L, dim=0)
         return A, B, L
     
-    def forward(self, t, new_t = None):
+    def forward(self, length = None):
         """
         Reconstuct the signal at times t.
         """
-        out = torch.zeros(self.batch_size, self.n_channels, t.shape[0])
-        if new_t is None:
-            new_t = self.curr_t
-        t_scaled = (2 * t / new_t) - 1
-        #TODO : can we vectorize this?
-        # for i in range(self.coef_dim):
-        #     sqrt_ = torch.sqrt(torch.tensor(2 * i + 1))
-        #     lp = legendre_polynomial_p(t_scaled, i)
-
-        #     out += self.coef[..., i] * sqrt_* lp[None, None, :]
+        if length is None:
+            length = self.length
         out = torch.einsum("bci,ij->bcj", self.coef, self.L)
 
-        return out
+        return out[:, :, :length]
 
     def fit_coef(self, f_t, t_space):
         if HIPPO_AVAILABLE and self.use_cpp:
-            f_t = f_t.view(self.batch_size * self.n_channels, -1)
+            f_t = f_t.reshape(self.batch_size * self.n_channels, -1)
             c_k = [legs(f_t[i, :], self.coef_dim) for i in range(f_t.shape[0])]
             c_k = torch.stack(c_k, dim=0)
-            c_k = c_k.view(self.batch_size, self.n_channels, self.coef_dim)
+            c_k = c_k.reshape(self.batch_size, self.n_channels, self.coef_dim)
             t = t_space[-1]
         else:
             c_k = self.coef.clone()
@@ -123,12 +113,12 @@ if __name__ == "__main__":
     hippo_model.fit_coef(simple_signal, t_space)
     hippo_model_slow.fit_coef(simple_signal, t_space)
 
-    approx = hippo_model(t_space)
+    approx = hippo_model()
     approx_np = approx.cpu().numpy()
     plt.plot(t_space, approx_np[0, 0, :],
              label = "HiPPOLegS")
 
-    approx_slow = hippo_model_slow(t_space)
+    approx_slow = hippo_model_slow()
     approx_slow_np = approx_slow.cpu().numpy()
     plt.plot(t_space, approx_slow_np[0, 0, :],
              label = "HiPPOLegS Slow")
