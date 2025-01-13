@@ -92,15 +92,22 @@ class TimeSeriesGenerator:
     def __init__(self,
                  scale_max = 1e6,
                  scale_min = 0,
-                 var_max = 0.01,
-                 max_growth = 10,
+                 var_max = 1e10,
+                 max_growth = 10000,
                  temperature = 0.1,
+                 min_freq = 0.5,
+                 max_freq = 144,
+                 max_sin_comps = 30,
                  seed=None):
         self.scale_max = scale_max
         self.scale_min = scale_min
         if var_max < 1:
             var_max = scale_max * var_max
         self.var_max = var_max
+
+        self.min_freq = min_freq
+        self.max_freq = max_freq
+        self.max_sin_comps = max_sin_comps
         self.max_growth = max_growth
         self.temperature = temperature
         if seed is not None:
@@ -130,14 +137,14 @@ class TimeSeriesGenerator:
         base = torch.rand(1) * (self.scale_max - self.scale_min) + self.scale_min
         
         if trend_type == "sin":
-            n_freqs = torch.randint(1, 30, (1,)).item()
-            freq = torch.rand(n_freqs) * 20 + 1
-            phase = torch.rand(n_freqs) * 2 * np.pi
-            scale = (1/ n_freqs) * 0.3 * torch.rand(n_freqs) * (self.scale_max - self.scale_min) + self.scale_min
+            n_freqs = torch.randint(1, self.max_sin_comps, (1,)).item()
+            freq = torch.rand(n_freqs) * (self.max_freq - self.min_freq) + self.min_freq
+            phase = torch.rand(n_freqs) * np.pi
+            scale = (torch.rand(n_freqs) / (5 * n_freqs * freq)) * (self.scale_max - self.scale_min) + self.scale_min
             aggs = scale[None, :] * torch.sin(2 * np.pi * freq[None, :] * t[:, None] + phase[None, :])
             return aggs.sum(dim=1) + base
         elif trend_type == "linear":
-            slope = torch.rand(1) * 2 - 1
+            slope = torch.rand(1)**2 * 2 - 1
             return self.max_growth * slope * t + base
         elif trend_type == "logistic":
             k = torch.rand(1) * (self.scale_max - self.scale_min) + self.scale_min
@@ -216,12 +223,16 @@ class TimeSeriesGenerator:
     
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
+    day_len = 144
+    n_days = 3
+    n_series = 100
     ts_gen = TimeSeriesGenerator(seed=42)
-    mixed_series, pure_series, correlations = ts_gen.generate(25, 10000)
+    mixed_series, pure_series, correlations = ts_gen.generate(n_series,
+                                                              day_len * n_days)
 
-    fig, axes = plt.subplots(5, 5, figsize=(20, 20))
-    for i in range(25):
-        j = i // 5
-        k = i % 5
+    fig, axes = plt.subplots(10, 10, figsize=(20, 20))
+    for i in range(100):
+        j = i // 10
+        k = i % 10
         axes[j, k].plot(mixed_series[i].numpy())
         axes[j, k].set_title(f"Series {i + 1}")
