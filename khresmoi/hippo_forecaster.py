@@ -64,7 +64,7 @@ class HiPPOLegS(torch.nn.Module):
         if HIPPO_AVAILABLE and self.use_cpp:
             batch_size = f_t.shape[0]
             f_t = f_t.reshape(batch_size * self.n_channels, -1)
-            c_k = [legs(f_t[i, :], self.coef_dim) for i in range(f_t.shape[0])]
+            c_k = [legs(f_t[i, :].cpu(), self.coef_dim) for i in range(f_t.shape[0])]
             c_k = torch.stack(c_k, dim=0)
             c_k = c_k.reshape(batch_size, self.n_channels, self.coef_dim)
             t = t_space[-1]
@@ -106,7 +106,7 @@ class HiPPOTransformer(torch.nn.Module):
 
         self.hippo = HiPPOLegS(coef_dim,
                                length,
-                               n_channels = n_channels,
+                               n_channels = n_channels * context_time,
                                use_cpp = use_cpp)
 
         self.transformer = Transformer(dim = coef_dim, 
@@ -142,15 +142,12 @@ class HiPPOTransformer(torch.nn.Module):
         f_t = einops.rearrange(f_t, "b c t l -> b (c t) l")
         if t_space is None:
             t_space = torch.linspace(0, 1,
-                                     f_t.shape[-1], device=f_t.device)
+                                    f_t.shape[-1], device=f_t.device)
         c_k = self.hippo.fit_coef(f_t, t_space)
         return c_k
     
-    def forward(self, f_t, t_space = None):
-
-        c_k = self.encode(f_t, t_space = t_space)
+    def forward(self, c_k):
         c_k = self.transformer(c_k, mask = self.mask)
-
         return c_k
 
 if __name__ == "__main__":
@@ -181,9 +178,14 @@ if __name__ == "__main__":
     signal_np = simple_signal.cpu().numpy()
     plt.plot(t_space, signal_np[0, 0, :],
              label = "Signal")
+    
+    # randomly set some values to na
+    idxs = torch.randint(0, len_, (len_ // 10,))
+    simple_signal_fit = simple_signal.clone()
+    simple_signal_fit[:, :, idxs] = 0
 
-    coef_fast = hippo_model.fit_coef(simple_signal, t_space)
-    coef_slow = hippo_model_slow.fit_coef(simple_signal, t_space)
+    coef_fast = hippo_model.fit_coef(simple_signal_fit, t_space)
+    coef_slow = hippo_model_slow.fit_coef(simple_signal_fit, t_space)
 
     approx = hippo_model(coef_fast)
     approx_np = approx.cpu().numpy()
