@@ -90,18 +90,23 @@ class MLP(torch.nn.Module):
         The activation function, by default torch.nn.GELU"""
     def __init__(self, 
                  dim, 
-                 hidden_dim, 
+                 hidden_dim,
+                 out_dim = None,
                  dropout = 0.,
                  activation = torch.nn.GELU,
                  residual = True):
         super().__init__()
+        if out_dim is None:
+            out_dim = dim
+        else:
+            residual = False
         self.residual = residual
         self.net = torch.nn.Sequential(
             torch.nn.LayerNorm(dim),
             torch.nn.Linear(dim, hidden_dim),
             activation(),
             torch.nn.Dropout(dropout),
-            torch.nn.Linear(hidden_dim, dim),
+            torch.nn.Linear(hidden_dim, out_dim),
             torch.nn.Dropout(dropout)
         )
 

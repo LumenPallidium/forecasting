@@ -6,8 +6,6 @@ from tqdm import tqdm
 class FitzHughNagumoDS:
     """
     The FitzHugh-Nagumo equation is a simplified model of the electrical activity of a neuron.
-
-    Here is used as a simple dynamical system to test the Koopman learning model.
     """
     def __init__(self, a = 0.7, b = 0.8, c = 0.08, I = 0.8):
         self.a = a
