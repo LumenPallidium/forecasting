@@ -30,8 +30,40 @@ class FitzHughNagumoDS:
 
         return x_t # batch, T, 2
     
+class TimeSpiralDS:
+    """
+    A spiral.
+    """
+    def __init__(self, radial_speed = 0.1, angular_speed = 1):
+        self.radial_speed = radial_speed
+        self.angular_speed = angular_speed
+
+    def sample(self, batch_size = 256, T = 100, dt = 0.01, x0 = None):
+        with torch.no_grad():
+            if x0 is None:
+                t0 = torch.rand(batch_size) * 10
+                r = t0 * self.radial_speed
+                x0 = torch.stack([r * torch.cos(t0), r * torch.sin(t0)], dim = 1)
+            x = x0
+            x_t = [x.clone()]
+            for t in range(T - 1):
+
+                polars = torch.stack([torch.norm(x, dim = 1),
+                                      torch.atan2(x[:, 1], x[:, 0])], dim = 1)
+
+                polars += torch.tensor([self.radial_speed * dt, self.angular_speed * dt])
+
+                x = torch.stack([polars[:, 0] * torch.cos(polars[:, 1]),
+                                polars[:, 0] * torch.sin(polars[:, 1])],
+                                dim = 1)
+
+                x_t.append(x.clone())
+            x_t = torch.stack(x_t, dim = 1)
+
+        return x_t
+    
 class CoupledFitzHughNagumoDS:
-    def __init__(self, n_copies = 5, a = 0.7, b = 0.8, c = 0.08, I = 0.8):
+    def __init__(self, n_copies = 5, a = 0.7, b = 0.8, c = 0.08, I = 0.05):
         self.n_copies = n_copies
         self.a = a
         self.b = b

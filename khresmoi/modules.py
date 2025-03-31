@@ -25,11 +25,34 @@ class ComplexReLU(torch.nn.Module):
         y = torch.complex(new_real, x.imag)
         return y
     
+class ComplexLayerNorm(torch.nn.Module):
+    def __init__(self,
+                 dim,
+                 normalize_imag = False,
+                 eps = 1e-6):
+        super().__init__()
+        self.real_layer_norm = torch.nn.LayerNorm(dim, eps = eps)
+        # imaginary values may not need to be normalized
+        if normalize_imag:
+            self.imag_layer_norm = torch.nn.LayerNorm(dim, eps = eps)
+        else:
+            self.imag_layer_norm = torch.nn.Identity()
+
+    def forward(self, x):
+        real = x.real
+        imag = x.imag
+
+        real = self.real_layer_norm(real)
+        imag = self.imag_layer_norm(imag)
+
+        return torch.complex(real, imag)
+    
 class FunGen(torch.nn.Module):
     def __init__(self, dim, out_dim = None, bias = True, complex = False):
         super().__init__()
         self.dim = dim
-        self.out_dim = out_dim if out_dim is not None else dim
+        out_dim = out_dim if out_dim is not None else dim
+        self.out_dim = out_dim
         dtype = torch.complex64 if complex else None
 
         self.linear = torch.nn.Linear(dim, out_dim,
@@ -114,6 +137,10 @@ class MLP(torch.nn.Module):
         if self.residual:
             return x + self.net(x)
         return self.net(x)
+    
+    def ema(self, other, decay = 0.996):
+        for p, p_other in zip(self.parameters(), other.parameters()):
+            p.data = decay * p.data + (1 - decay) * p_other.data
     
 class Attention(torch.nn.Module):
     """Based on ViT implementation from Phil Wang:
@@ -211,18 +238,19 @@ class Transformer(torch.nn.Module):
                  dropout = 0.4,
                  positional_embedding = True,
                  context = None,
+                 cross_context = None,
                  activation = torch.nn.GELU,
                  ema_decay = 0.996,
                  first_layer_norm = True,
-                 cross = False,
-                 causal = True):
+                 cross = False):
         super().__init__()
 
         self.dim = dim
         self.depth = depth
         self.heads = heads
         self.cross = cross
-        self.causal = causal
+        self.context = context
+        self.cross_context = cross_context
 
         self.ema_decay = ema_decay
 
@@ -230,13 +258,21 @@ class Transformer(torch.nn.Module):
 
         if first_layer_norm:
             self.norm = torch.nn.LayerNorm(dim)
+            self.cross_norm = torch.nn.LayerNorm(dim)
         else:
             self.norm = torch.nn.Identity()
+            self.cross_norm = torch.nn.Identity()
 
         if positional_embedding and (context is not None):
             self.pos_embedding = torch.nn.Parameter(torch.randn(1, context, dim))
         else:
             self.register_buffer("pos_embedding", torch.zeros(1, 1, dim))
+
+        if positional_embedding and (cross_context is not None):
+            self.pos_embedding_cross = torch.nn.Parameter(torch.randn(1, cross_context, dim))
+        else:
+            self.register_buffer("pos_embedding_cross", torch.zeros(1, 1, dim))
+        
 
         self.layers = torch.nn.ModuleList([])
         for _ in range(depth):
@@ -250,26 +286,21 @@ class Transformer(torch.nn.Module):
                 y = None,
                 stop_at = None,
                 pos_embedding = None,
+                pos_embedding_cross = None,
                 mask = None):
-        """Transformer forward. Can stop at a certain layer for layer-dropout,
-        as well as be supplied with a positional embedding (e.g. for shared
-        positional embeddings between models)"""
         if pos_embedding is None:
             pos_embedding = self.pos_embedding
-        if self.causal and (mask is None):
-            mask = torch.triu(torch.ones(x.size(1), x.size(1)), diagonal = 1).to(x.device,
-                                                                                 dtype = torch.bool)
+        if (y is not None) and (pos_embedding_cross is None):
+            y = self.cross_norm(y) + self.pos_embedding_cross
         x = self.norm(x) + pos_embedding
 
         for i, (attention, ff) in enumerate(self.layers):
             x = x + attention(x, y = y, mask = mask)
             x = x + ff(x)
 
-            y = None # disable cross attention after first layer
             if (stop_at is not None) and (i >= (stop_at - 1)):
                 break
         return x
-    
 
 @dataclass
 class LossComponents:
