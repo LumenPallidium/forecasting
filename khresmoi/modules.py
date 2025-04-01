@@ -64,6 +64,8 @@ class FunGen(torch.nn.Module):
         self.exp_linear = torch.nn.Linear(dim, out_dim,
                                           bias = bias,
                                           dtype = dtype)
+        self.out_bias = torch.nn.Parameter(torch.zeros(out_dim,
+                                                       dtype = dtype))
 
         if complex:
             self.relu = ComplexReLU()
@@ -75,7 +77,7 @@ class FunGen(torch.nn.Module):
         log_x = torch.log(self.relu(self.log_linear(x)) + 1e-6)
 
         y_log = self.exp_linear(torch.exp(log_x))
-        y = y_linear * y_log
+        y = y_linear * y_log + self.out_bias
         return y
 
 def symlog(x):
@@ -226,6 +228,8 @@ class Transformer(torch.nn.Module):
         The dropout rate, by default 0.
     positional_embedding : bool, optional
         Whether to use a positional embedding, by default True
+    causal : bool, optional
+        Whether to use causal attention, by default False
     context : int, optional
         The number of context frames, by default None
     activation : torch.nn.Module, optional
@@ -237,6 +241,7 @@ class Transformer(torch.nn.Module):
                  heads = 8, 
                  dropout = 0.4,
                  positional_embedding = True,
+                 causal = False,
                  context = None,
                  cross_context = None,
                  activation = torch.nn.GELU,
@@ -249,6 +254,7 @@ class Transformer(torch.nn.Module):
         self.depth = depth
         self.heads = heads
         self.cross = cross
+        self.causal = causal
         self.context = context
         self.cross_context = cross_context
 
@@ -292,6 +298,13 @@ class Transformer(torch.nn.Module):
             pos_embedding = self.pos_embedding
         if (y is not None) and (pos_embedding_cross is None):
             y = self.cross_norm(y) + self.pos_embedding_cross
+        
+        if self.causal and (mask is None):
+            mask = torch.triu(torch.ones(x.size(1),
+                                         x.size(1)),
+                              diagonal = 1).to(x.device,
+                                               dtype = torch.bool)
+
         x = self.norm(x) + pos_embedding
 
         for i, (attention, ff) in enumerate(self.layers):

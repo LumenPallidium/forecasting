@@ -88,7 +88,11 @@ class CoupledFitzHughNagumoDS:
 
         return x_t # batch, T, 2 * n_copies
 
-def train_on_ds(model, ds, n_steps = 1000, delay = 10, batch_size = 256):
+def train_on_ds(model, ds,
+                n_steps = 1000,
+                delay = 10,
+                batch_size = 256,
+                clip_grad = 0.5):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr = 1e-4)
@@ -106,6 +110,10 @@ def train_on_ds(model, ds, n_steps = 1000, delay = 10, batch_size = 256):
 
         loss = model.get_loss(x_t, x_t1)
         loss.backward()
+
+        if clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
         optimizer.step()
 
         losses.append(loss.item())

@@ -202,7 +202,8 @@ class KNF(torch.nn.Module):
 if __name__ == "__main__":
     import numpy as np
     import matplotlib.pyplot as plt
-    from data_stream import CoupledFitzHughNagumoDS, train_on_ds
+    from data_stream import CoupledFitzHughNagumoDS, TimeSpiralDS, train_on_ds
+    DIM = 2
     DELAY = 4
     LOOKBACK_DELAY = 8
     N_CHUNKS = 32
@@ -210,9 +211,9 @@ if __name__ == "__main__":
     BATCH_SIZE = 512
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = KNF(10, DELAY, LOOKBACK_DELAY)
-    model_fun_gen = KNF(10, DELAY, LOOKBACK_DELAY, use_fun_gen = True)
-    ds = CoupledFitzHughNagumoDS()
+    model = KNF(DIM, DELAY, LOOKBACK_DELAY, use_lookback = False)
+    model_fun_gen = KNF(DIM, DELAY, LOOKBACK_DELAY, use_fun_gen = True, use_lookback = False)
+    ds = TimeSpiralDS()
 
     losses = train_on_ds(model, ds,
                          n_steps = N_STEPS,
@@ -226,7 +227,7 @@ if __name__ == "__main__":
     smooth_losses = np.convolve(losses, np.ones(20) / 20, mode = "valid")
     smooth_losses_fun_gen = np.convolve(losses_fun_gen, np.ones(20) / 20, mode = "valid")
 
-    fig, ax = plt.subplots(1, 2, figsize = (10, 5))
+    fig, ax = plt.subplots(1, 3, figsize = (15, 5))
     ax[0].plot(smooth_losses,
                label = "Full")
     ax[0].plot(smooth_losses_fun_gen,
@@ -236,4 +237,24 @@ if __name__ == "__main__":
     A = model_fun_gen.koopman_global.detach().cpu().numpy()
     ax[1].imshow(A)
     ax[1].set_title("Koopman Matrix Approximation")
+
+    x_test = ds.sample(batch_size = 1,
+                       T = 2 * DELAY * N_CHUNKS).to(device)
+    x_in, x_out = x_test[:, :DELAY * N_CHUNKS, :], x_test[:, DELAY * N_CHUNKS:, :]
+    with torch.no_grad():
+        x_hat = model_fun_gen(x_in)
+        for i in range(DELAY * N_CHUNKS - 1):
+            x_hat, _, _ = model_fun_gen(x_hat, return_aux = True)
+
+    x_hat_np = x_hat.cpu().numpy()
+    x_out_np = x_out.cpu().numpy()
+
+    ax[2].plot(x_out_np[0, :, 0], x_out_np[0, :, 1], label = "True")
+    ax[2].plot(x_hat_np[0, :, 0], x_hat_np[0, :, 1], label = "Pred")
+    ax[2].scatter(x_in[0, 0, 0].cpu().numpy(), x_in[0, 0, 1].cpu().numpy(),
+                  label = "Start", c = "red", marker = "x")
+    ax[2].set_title("Prediction")
+    ax[2].legend()
+    plt.show()
+
 

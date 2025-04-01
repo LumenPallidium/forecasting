@@ -100,7 +100,7 @@ class LKIS(torch.nn.Module):
                  hidden_dim,
                  bottleneck_dim = None,
                  hidden_mults = 3,
-                 neural_koopman = False,
+                 neural_koopman = True,
                  attention_embed = False,
                  use_decoder = True,
                  alpha = 1,
@@ -195,9 +195,8 @@ class LKIS(torch.nn.Module):
                 self.deembedder = torch.nn.Linear(hidden_dim * embed_mult, input_dim * delay)
 
         if self.neural_koopman:
-            self.koopman = DeepMLP(2 * bottleneck_dim, 2 * bottleneck_dim,
-                                   hidden_mults, activation = activation,
-                                   complex = complex)
+            self.koopman = torch.nn.Parameter(torch.eye(bottleneck_dim,
+                                                        dtype = torch.complex64 if complex else None))
             
     def decode(self, x):
         batch_size = x.shape[0]
@@ -231,9 +230,6 @@ class LKIS(torch.nn.Module):
         else:
             x_hat = None
 
-        # unstack x
-        x = x.view(batch_size, self.delay, -1)
-
         return x, x_hat
     
     def get_koopman(self, y_t, y_t1):
@@ -248,12 +244,19 @@ class LKIS(torch.nn.Module):
             The second sequence of the pair. Should be one step delayed from y_t.
         """
         if self.neural_koopman:
-            raise NotImplementedError("Neural Koopman not implemented yet")
+            A = self.koopman.clone()
+            y_t1_hat = torch.einsum("ij,bj->bi",
+                                    self.koopman,
+                                    y_t)
+            loss = (y_t1 - y_t1_hat).abs().mean()
 
         else:
             y_t_inv = torch.pinverse(y_t)
             A = torch.einsum("bdi,bjd->bij", y_t1, y_t_inv)
-        return A
+            Ay = torch.einsum("bij, bdj -> bdi", A, y_t)
+            # frobenius norm of y_t1 - Ay
+            loss = torch.linalg.matrix_norm(y_t1 - Ay).mean()
+        return A, loss
     
     def get_loss(self, x_t, x_t1):
         """
@@ -272,10 +275,7 @@ class LKIS(torch.nn.Module):
             y_t, _ = self.forward(x_t)
         y_t1, x_t1_hat = self.forward(x_t1)
 
-        A = self.get_koopman(y_t, y_t1)
-        Ay = torch.einsum("bij, bdj -> bdi", A, y_t)
-        # frobenius norm of y_t1 - Ay
-        loss = torch.linalg.matrix_norm(y_t1 - Ay).mean()
+        _, loss = self.get_koopman(y_t, y_t1)
 
         if self.use_decoder:
             rec_loss = mse_loss(x_t1, x_t1_hat)
@@ -288,11 +288,11 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
     from data_stream import FitzHughNagumoDS, TimeSpiralDS, train_on_ds
-    DELAY = 4
+    DELAY = 8
     N_STEPS = 2000
     BATCH_SIZE = 512
-    HIDDEN_DIM = 32
-    HIDDEN_MULTS = [1, 2, 2, 2, 1]
+    HIDDEN_DIM = 64
+    HIDDEN_MULTS = [2, 2, 2, 1]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = LKIS(2,
@@ -318,18 +318,15 @@ if __name__ == "__main__":
         y_t1, x_t1_hat  = model.forward(x_t1)
 
         # this is the Koopman operator
-        A = model.get_koopman(y_t, y_t1)
-        mean_var = A.var(dim = 0).mean()
-        A = A.mean(dim = 0)
+        A, _ = model.get_koopman(y_t, y_t1)
 
         x_unseen = ds.sample(T = DELAY * (BATCH_SIZE // 2),
                            batch_size = 1).to(device)
         x_unseen = x_unseen.view(BATCH_SIZE // 2, DELAY, 2)
         y_unseen, x_unseen_hat = model.forward(x_unseen)
-        y_unseen_hat = torch.einsum("ij, bdj -> bdi", A, y_unseen)
+        y_unseen_hat = torch.einsum("ij, bj -> bi", A, y_unseen)
 
-        x_future_hat = model.decode(y_unseen_hat.reshape(BATCH_SIZE // 2,
-                                                         DELAY * HIDDEN_DIM))
+        x_future_hat = model.decode(y_unseen_hat)
 
         x_t_plt = x_unseen.view(DELAY * BATCH_SIZE // 2, 2)
         x_t_plt = x_t_plt.detach().cpu().numpy()
